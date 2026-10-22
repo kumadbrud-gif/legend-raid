@@ -352,6 +352,121 @@ function makeProblem(){
   return {text:f(fmt(a),fmt(b)),ans:op==="+"?a+b:a-b,unit};
 }
 
+
+/* ---------------- 소리 ----------------
+   배경음악과 효과음은 이 게임을 위해 새로 만든 8비트풍 곡이에요(파일 없이 브라우저에서 바로 만들어요).
+   울음소리는 PokeAPI에서 불러오고, 못 불러오면 비슷한 효과음으로 대신해요. */
+const rep=(s,n)=>Array(n).fill(s).join(" ");
+const SONGS={
+  title:{bpm:118,loop:true,bus:"bgm",
+    ch:[{w:"square",v:.16,n:`E5:2 G5:2 C6:4 B5:2 G5:2 E5:4  A5:2 C6:2 E6:4 D6:2 C6:2 A5:4
+        F5:2 A5:2 C6:4 D6:2 C6:2 A5:2 F5:2  G5:4 B5:4 D6:6 -:2
+        E6:2 D6:2 C6:2 G5:2 E5:4 G5:4  A5:2 B5:2 C6:2 E6:2 D6:4 C6:4
+        F5:2 G5:2 A5:2 C6:2 D6:2 C6:2 B5:2 A5:2  G5:4 D5:2 G5:2 B5:4 -:4`},
+        {w:"triangle",v:.42,n:[rep("C3:2 G3:2",4),rep("A2:2 E3:2",4),rep("F2:2 C3:2",4),rep("G2:2 D3:2",4)].join(" ").repeat(1)+" "+[rep("C3:2 G3:2",4),rep("A2:2 E3:2",4),rep("F2:2 C3:2",4),rep("G2:2 D3:2",4)].join(" ")}],
+    dr:"k---s---k-k-s---".repeat(8)},
+  battle:{bpm:156,loop:true,bus:"bgm",
+    ch:[{w:"square",v:.15,n:`A4:2 C5:2 E5:2 A5:4 G5:2 E5:2 C5:2  F5:2 E5:2 C5:2 A4:2 C5:4 F5:4
+        G5:2 F5:2 D5:2 B4:2 D5:2 G5:2 B5:4  G#5:4 E5:2 B4:2 G#4:4 B4:4
+        A5:2 B5:2 C6:4 B5:2 A5:2 E5:4  F5:2 G5:2 A5:4 G5:2 F5:2 C5:4
+        D5:2 G5:2 B5:2 D6:2 C6:2 B5:2 G5:4  E5:2 G#5:2 B5:2 E6:2 D6:2 B5:2 G#5:4`},
+        {w:"triangle",v:.45,n:[rep("A2:2 A3:2",4),rep("F2:2 F3:2",4),rep("G2:2 G3:2",4),rep("E2:2 E3:2",4)].join(" ")+" "+[rep("A2:2 A3:2",4),rep("F2:2 F3:2",4),rep("G2:2 G3:2",4),rep("E2:2 E3:2",4)].join(" ")}],
+    dr:"k-h-s-hkk-h-s-hh".repeat(8)},
+  win:{bpm:150,bus:"sfx",
+    ch:[{w:"square",v:.2,n:"C5:2 E5:2 G5:2 C6:6 -:2 G5:2 A5:2 B5:2 C6:12"},
+        {w:"triangle",v:.45,n:"C3:6 G3:6 E3:4 G3:6 C3:10"}],dr:"k---k---k-k-s-------s"},
+  lose:{bpm:96,bus:"sfx",
+    ch:[{w:"square",v:.16,n:"E5:3 D#5:3 D5:3 C#5:9"},{w:"triangle",v:.4,n:"A2:9 A2:9"}]}
+};
+function freq(n){const m=n.match(/^([A-G])([#b]?)(\d)$/);const s={C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1]]+(m[2]==="#"?1:m[2]==="b"?-1:0);
+  return 440*Math.pow(2,((+m[3]+1)*12+s-69)/12);}
+function compile(song){
+  if(song.c)return song.c;const steps=new Map();let len=0;
+  const put=(t,e)=>{if(!steps.has(t))steps.set(t,[]);steps.get(t).push(e);};
+  song.ch.forEach((c,ci)=>{let t=0;c.n.trim().split(/\s+/).forEach(tok=>{const[nm,d]=tok.split(":");if(nm!=="-")put(t,{ci,f:freq(nm),d:+d});t+=+d;});len=Math.max(len,t);});
+  if(song.dr){[...song.dr].forEach((ch,i)=>{if(ch!=="-")put(i,{dr:ch});});len=Math.max(len,song.dr.length);}
+  return song.c={steps,len};
+}
+const Snd={
+  ctx:null,mode:localStorage.getItem("pkraid-snd")||"all",want:null,cur:null,gen:0,
+  init(){
+    if(this.ctx)return;const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+    const c=this.ctx=new AC();
+    this.out=c.createGain();this.out.gain.value=.7;this.out.connect(c.destination);
+    this.bus={bgm:c.createGain(),sfx:c.createGain()};
+    this.bus.bgm.gain.value=.55;this.bus.sfx.gain.value=.9;
+    this.bus.bgm.connect(this.out);this.bus.sfx.connect(this.out);
+    const b=this.noiseBuf=c.createBuffer(1,c.sampleRate,c.sampleRate);const d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+  },
+  ready(){return this.ctx&&this.ctx.state==="running";},
+  unlock(){
+    this.init();if(!this.ctx)return;
+    const go=()=>{if(!this.cur&&this.want)this.bgm(this.want);};
+    if(this.ctx.state==="running")go();else this.ctx.resume().then(go);
+  },
+  label(){return {all:"🔊 소리 켜짐",sfx:"🔉 효과음만",off:"🔇 소리 꺼짐"}[this.mode];},
+  setMode(m){this.mode=m;localStorage.setItem("pkraid-snd",m);if(m!=="all")this.stop();else{this.cur=null;this.bgm(this.want);}},
+  cycle(){this.setMode({all:"sfx",sfx:"off",off:"all"}[this.mode]);},
+  stop(){this.gen++;this.cur=null;},
+  bgm(name){
+    this.want=name;
+    if(this.mode!=="all"||!name){this.stop();return;}
+    if(!this.ready()||this.cur===name)return;
+    this.stop();this.cur=name;
+    const s=SONGS[name],c=compile(s),sd=60/s.bpm/4,gen=this.gen;let i=0,t=this.ctx.currentTime+.08;
+    const tick=()=>{
+      if(gen!==this.gen)return;
+      while(t<this.ctx.currentTime+.18){this.step(s,c,i,t,sd);i=(i+1)%c.len;t+=sd;}
+      setTimeout(tick,30);
+    };tick();
+  },
+  once(name){
+    if(this.mode==="off"||!this.ready())return;
+    const s=SONGS[name],c=compile(s),sd=60/s.bpm/4,t0=this.ctx.currentTime+.05;
+    for(let i=0;i<c.len;i++)this.step(s,c,i,t0+i*sd,sd);
+  },
+  step(s,c,i,t,sd){const ev=c.steps.get(i);if(!ev)return;const bus=this.bus[s.bus];
+    ev.forEach(e=>e.dr?this.drum(e.dr,t,bus):this.tone(s.ch[e.ci].w,e.f,t,e.d*sd,s.ch[e.ci].v,bus));},
+  tone(w,f,t,d,v,bus,f2){
+    const c=this.ctx,o=c.createOscillator(),g=c.createGain();o.type=w;o.frequency.setValueAtTime(f,t);
+    if(f2)o.frequency.exponentialRampToValueAtTime(f2,t+d);
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(v,t+.008);g.gain.setTargetAtTime(v*.55,t+.03,.08);g.gain.setTargetAtTime(0,t+d*.85,.025);
+    o.connect(g);g.connect(bus);o.start(t);o.stop(t+d+.15);
+  },
+  noise(t,d,v,type,fq,bus,fq2){
+    const c=this.ctx,s=c.createBufferSource(),f=c.createBiquadFilter(),g=c.createGain();s.buffer=this.noiseBuf;
+    f.type=type;f.frequency.setValueAtTime(fq,t);if(fq2)f.frequency.exponentialRampToValueAtTime(fq2,t+d);
+    g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.001,t+d);
+    s.connect(f);f.connect(g);g.connect(bus);s.start(t);s.stop(t+d+.05);
+  },
+  drum(k,t,bus){
+    if(k==="h")this.noise(t,.04,.12,"highpass",7000,bus);
+    else if(k==="s")this.noise(t,.12,.28,"bandpass",1800,bus);
+    else{const c=this.ctx,o=c.createOscillator(),g=c.createGain();o.frequency.setValueAtTime(150,t);o.frequency.exponentialRampToValueAtTime(40,t+.12);
+      g.gain.setValueAtTime(.55,t);g.gain.exponentialRampToValueAtTime(.001,t+.14);o.connect(g);g.connect(bus);o.start(t);o.stop(t+.16);}
+  },
+  sfx(name){
+    if(this.mode==="off"||!this.ready())return;const t=this.ctx.currentTime+.01,b=this.bus.sfx;
+    if(name==="blip")this.tone("square",880,t,.05,.12,b);
+    else if(name==="key")this.tone("square",660,t,.035,.1,b);
+    else if(name==="hit"){this.noise(t,.25,.5,"lowpass",3000,b,300);this.tone("square",620,t,.22,.2,b,90);}
+    else if(name==="miss"){this.noise(t,.35,.25,"bandpass",3200,b,500);}
+    else if(name==="roar"){this.tone("sawtooth",240,t,.7,.18,b,80);this.tone("square",180,t+.05,.6,.08,b,70);this.noise(t,.5,.15,"bandpass",900,b,300);}
+  },
+  cry(id){
+    if(this.mode==="off")return;
+    const a=document.createElement("audio");
+    if(!a.canPlayType('audio/ogg; codecs="vorbis"')){this.sfx("roar");return;}
+    let done=false;const fb=()=>{if(!done){done=true;this.sfx("roar");}};
+    a.src=`https://raw.githubusercontent.com/PokeAPI/cries/main/cries/pokemon/latest/${id}.ogg`;a.volume=.45;
+    a.onerror=fb;a.play().then(()=>{done=true;}).catch(fb);
+  }
+};
+addEventListener("pointerdown",()=>Snd.unlock(),{capture:true});
+addEventListener("keydown",()=>Snd.unlock(),{capture:true});
+function sndBtn(){return `<button class="btn small" data-act="snd" aria-label="소리 설정 바꾸기">${Snd.label()}</button>`;}
+function homeBar(){setHTML(bar,`<span class="sp"></span>${sndBtn()}`);}
+
 /* ---------------- 상태와 화면 전환 ---------------- */
 const S={role:null,code:null,sid:null,room:null,unsub:null,editing:false,draft:null,creating:null};
 const T={boss:null,hp:null,seen:null,queue:[],playing:false};
@@ -381,12 +496,13 @@ function leave(){
   Object.assign(S,{role:null,code:null,sid:null,room:null,unsub:null,editing:false,draft:null,creating:null});
   Object.assign(T,{boss:null,hp:null,seen:null,queue:[],playing:false});
   history.replaceState(null,"",location.pathname);
-  bar.innerHTML="";show("home",HomeView);
+  show("home",HomeView);
 }
 function render(){
   if(!S.room||!S.room.meta){toast("방을 찾을 수 없어요.");leave();return;}
   renderBar();
   const {meta,raid}=D();
+  Snd.bgm(meta.stage==="raid"?"battle":meta.stage==="result"?null:"title");
   if(S.role==="teacher"){
     if(meta.stage==="raid")show("T-raid-"+raid,TeacherRaid);
     else if(meta.stage==="result")show("T-result-"+raid,TeacherResult);
@@ -399,11 +515,11 @@ function renderBar(){
   if(S.role==="teacher"){
     setHTML(bar,`<span>방 코드</span><span class="code">${S.code}</span><button class="btn small" data-act="qr">QR 보기</button>
       <span class="dim">선생님 비밀번호 ${esc(meta.pin)}</span><span class="badge">${mode}</span><span class="sp"></span>
-      <button class="btn small" data-act="leave">나가기</button>`);
+      ${sndBtn()}<button class="btn small" data-act="leave">나가기</button>`);
   }else{
     const me=students[S.sid];
     setHTML(bar,`<span>${me?esc(me.num+"번 "+me.name):""}</span><span class="dim">방 ${S.code}</span><span class="badge">${mode}</span>
-      <span class="sp"></span><button class="btn small" data-act="leave">나가기</button>`);
+      <span class="sp"></span>${sndBtn()}<button class="btn small" data-act="leave">나가기</button>`);
   }
 }
 
@@ -439,6 +555,7 @@ function resultHTML(extra){
 
 /* ---------------- 홈 ---------------- */
 function HomeView(){return{mount(m){
+  homeBar();Snd.bgm("title");
   const pre=(new URLSearchParams(location.search).get("room")||"").replace(/\D/g,"").slice(0,6);
   m.append(h(`<div>
     <div class="hero"><div class="imgs">${spr(384,false)}${spr(249,false)}${spr(483,false)}</div>
@@ -532,7 +649,7 @@ function TeacherRaid(){
           <div class="chips" data-r="chips"></div><button class="btn go big" data-act="endRaid">레이드 종료</button></section>
       </div>`);
       m.append(el);R=refs(el);
-      R.foe.classList.add("appear");
+      R.foe.classList.add("appear");setTimeout(()=>Snd.cry(meta.boss),500);
       R.msg.textContent=`야생의 ${josa(nameOf(meta.boss),"이","가")} 나타났다!`;
     },
     update(){
@@ -560,11 +677,13 @@ function playNext(R){
   restart(R.me,"lunge");restart(R.foe,ev.hit?"hurt":"dodge");
   R.msg.textContent=ev.hit?`${ev.name}의 ${nameOf(ev.mon)}! 공격이 명중했다!`:`${ev.name}의 ${nameOf(ev.mon)}! 공격이 빗나갔다!`;
   if(!ev.hit)R.me.classList.add("fainted");
+  if(!fast)Snd.cry(ev.mon);setTimeout(()=>Snd.sfx(ev.hit?"hit":"miss"),fast?200:450);
   setTimeout(()=>{T.playing=false;playNext(R);},fast?700:1500);
 }
 
 /* ---------------- 선생님: 결과 ---------------- */
 function TeacherResult(){return{mount(m){
+  Snd.once(D().meta.result==="caught"?"win":"lose");
   m.append(h(`<div>${resultHTML('<button class="btn blue big" data-act="nextRaid">다음 레이드 준비</button>')}</div>`));
 }};}
 
@@ -685,7 +804,7 @@ function StudentPick(){
       const el=h(`<div><div class="battle solo">${sceneHTML(meta.boss)}<div class="dlg"><div class="in" data-r="msg"></div></div></div>
         <section class="win mt" style="max-width:680px;margin-left:auto;margin-right:auto"><h2>출전할 포켓몬을 골라 주세요</h2>
           <p class="hint" data-r="note"></p><div class="mons mt" data-r="grid"></div></section></div>`);
-      m.append(el);R=refs(el);R.foe.classList.add("appear");
+      m.append(el);R=refs(el);R.foe.classList.add("appear");setTimeout(()=>Snd.cry(meta.boss),500);
       R.msg.textContent=`야생의 ${josa(nameOf(meta.boss),"이","가")} 나타났다!`;
     },
     update(){
@@ -715,7 +834,7 @@ function StudentBattle(){
       const el=h(`<div class="battle solo">${sceneHTML(meta.boss,att.mon)}<div class="dlg"><div class="in"><div data-r="msg"></div><div data-r="pad"></div></div></div></div>`);
       m.append(el);R=refs(el);
       R.mebox.hidden=false;R.mename.textContent=nameOf(att.mon);R.menum.textContent=`${me.num}번 ${me.name}`;
-      if(att.status==="pending"){R.msg.innerHTML=`<p class="q">${esc(att.text)}</p>`;R.pad.innerHTML=padHTML(att.unit);}
+      if(att.status==="pending"){R.msg.innerHTML=`<p class="q">${esc(att.text)}</p>`;R.pad.innerHTML=padHTML(att.unit);setTimeout(()=>Snd.cry(att.mon),300);}
       else showDone(att);
       onKey=e=>{if(shown||animating)return;
         if(/^[0-9.]$/.test(e.key))this.key(e.key);else if(e.key==="Backspace")this.key("del");else if(e.key==="Enter")this.key("ok");else return;
@@ -732,6 +851,7 @@ function StudentBattle(){
     key(k){
       if(shown||animating)return;
       if(k==="ok")return this.submit();
+      Snd.sfx("key");
       if(k==="del")ans=ans.slice(0,-1);
       else if(k==="."){if(!ans.includes("."))ans=(ans||"0")+".";}
       else{if(ans.length>=6)return;if(ans.includes(".")&&ans.split(".")[1].length>=2)return;ans=ans==="0"?k:ans+k;}
@@ -744,7 +864,7 @@ function StudentBattle(){
       const hit=Math.round(parseFloat(ans)*100)===att.ans;
       animating=true;R.pad.innerHTML="";
       R.msg.innerHTML=`<p class="q">${esc(nameOf(att.mon))}의 공격!</p>`;
-      restart(R.me,"lunge");restart(R.foe,hit?"hurt":"dodge");
+      restart(R.me,"lunge");restart(R.foe,hit?"hurt":"dodge");setTimeout(()=>Snd.sfx(hit?"hit":"miss"),250);
       const given=ans;
       try{await Store.update(`rooms/${S.code}/attempts/r${raid}/${S.sid}`,{status:hit?"hit":"miss",given,done:Date.now()});}
       catch(e){animating=false;R.msg.innerHTML=`<p class="q">${esc(att.text)}</p>`;R.pad.innerHTML=padHTML(att.unit);toast("저장하지 못했어요. 다시 공격해 주세요.");return;}
@@ -755,6 +875,7 @@ function StudentBattle(){
 
 /* ---------------- 학생: 결과 ---------------- */
 function StudentResult(){return{mount(m){
+  Snd.once(D().meta.result==="caught"?"win":"lose");
   const {atts}=D();const a=atts[S.sid];
   const mine=!a?"이번 레이드에는 공격하지 못했어요."
     :a.status==="hit"?`내 ${nameOf(a.mon)}의 공격은 명중했어요!`
@@ -786,6 +907,7 @@ const ACT={
     const sid="s"+num,ex=await Store.get(`rooms/${code}/students/${sid}`);
     if(ex&&ex.name!==name&&!confirm(`${num}번은 이미 '${ex.name}' 이름으로 들어와 있어요. 같은 사람이면 확인을 눌러 주세요.`))return;
     if(!ex)await Store.set(`rooms/${code}/students/${sid}`,{num,name,joined:Date.now()});
+    if(!localStorage.getItem("pkraid-snd"))Snd.setMode("sfx");
     enter({role:"student",code,sid});
   },
   async create(){
@@ -806,6 +928,7 @@ const ACT={
     if(confirm(msg))leave();
   },
   qr:openQR,
+  snd(){Snd.cycle();if(S.room)renderBar();else homeBar();},
   closeModal(){modal.hidden=true;modal.innerHTML="";},
   pickBoss(b){T.boss=+b.dataset.id;document.querySelectorAll(".bossgrid button").forEach(x=>x.setAttribute("aria-pressed",String(+x.dataset.id===T.boss)));cur.v.boss&&cur.v.boss();},
   hpStep(b){T.hp=Math.min(99,Math.max(1,T.hp+(+b.dataset.d)));$("#hpIn").value=T.hp;},
@@ -838,7 +961,7 @@ const ACT={
 };
 document.addEventListener("click",e=>{
   const b=e.target.closest("[data-act]");if(!b||b.disabled)return;
-  const f=ACT[b.dataset.act];if(f){e.preventDefault();f(b);}
+  const f=ACT[b.dataset.act];if(f){e.preventDefault();if(b.dataset.act!=="key")Snd.sfx("blip");f(b);}
 });
 addEventListener("unhandledrejection",e=>{
   const m=String(e.reason&&e.reason.message||e.reason||"");
